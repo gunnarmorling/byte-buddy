@@ -27,10 +27,7 @@ import net.bytebuddy.implementation.bytecode.constant.ClassConstant;
 import net.bytebuddy.implementation.bytecode.constant.IntegerConstant;
 import net.bytebuddy.implementation.bytecode.constant.NullConstant;
 import net.bytebuddy.implementation.bytecode.constant.TextConstant;
-import net.bytebuddy.implementation.bytecode.member.FieldAccess;
-import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
-import net.bytebuddy.implementation.bytecode.member.MethodReturn;
-import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
+import net.bytebuddy.implementation.bytecode.member.*;
 import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.pool.TypePool;
 import net.bytebuddy.utility.JavaInstance;
@@ -45,7 +42,6 @@ import java.lang.instrument.ClassDefinition;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
 import java.lang.instrument.UnmodifiableClassException;
-import java.lang.invoke.MethodHandle;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.AccessControlContext;
@@ -2167,10 +2163,10 @@ public interface AgentBuilder {
                                  List<Class<?>> markerInterfaces,
                                  List<?> additionalBridges,
                                  Collection<? extends ClassFileTransformer> classFileTransformers) {
-                JavaInstance.MethodType factoryMethod = JavaInstance.MethodType.of(factoryMethodType);
-                JavaInstance.MethodType lambdaMethod = JavaInstance.MethodType.of(lambdaMethodType);
-                JavaInstance.MethodHandle targetMethod = JavaInstance.MethodHandle.of(targetMethodHandle, targetTypeLookup);
-                JavaInstance.MethodType specializedLambdaMethod = JavaInstance.MethodType.of(specializedLambdaMethodType);
+                JavaInstance.MethodType factoryMethod = JavaInstance.MethodType.ofLoaded(factoryMethodType);
+                JavaInstance.MethodType lambdaMethod = JavaInstance.MethodType.ofLoaded(lambdaMethodType);
+                JavaInstance.MethodHandle targetMethod = JavaInstance.MethodHandle.ofLoaded(targetMethodHandle, targetTypeLookup);
+                JavaInstance.MethodType specializedLambdaMethod = JavaInstance.MethodType.ofLoaded(specializedLambdaMethodType);
                 Class<?> targetType = JavaInstance.MethodHandle.lookupType(targetTypeLookup);
                 String lambdaClassName = targetType.getName() + LAMBDA_TYPE_INFIX + LAMBDA_NAME_COUNTER.incrementAndGet();
                 DynamicType.Builder<?> builder = byteBuddy
@@ -2556,7 +2552,7 @@ public interface AgentBuilder {
                         return new Size(new StackManipulation.Compound(
                                 new StackManipulation.Compound(fieldAccess),
                                 new StackManipulation.Compound(parameterAccess),
-                                new FooBar(specializedLambdaMethod),
+                                new HandleInvocation(specializedLambdaMethod),
                                 MethodReturn.returning(targetMethod.getReturnType().asErasure())
                         ).apply(methodVisitor, implementationContext).getMaximalSize(), instrumentedMethod.getStackSize());
                     }
