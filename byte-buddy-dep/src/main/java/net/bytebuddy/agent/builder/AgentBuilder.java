@@ -34,6 +34,7 @@ import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
 import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.pool.TypePool;
 import net.bytebuddy.utility.JavaInstance;
+import net.bytebuddy.utility.JavaType;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
@@ -44,6 +45,7 @@ import java.lang.instrument.ClassDefinition;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
 import java.lang.instrument.UnmodifiableClassException;
+import java.lang.invoke.MethodHandle;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.AccessControlContext;
@@ -1980,8 +1982,11 @@ public interface AgentBuilder {
          */
         ENABLED {
             @Override
-            protected void apply(ByteBuddy byteBuddy, Instrumentation instrumentation, ClassFileTransformer classFileTransformer) {
-                if (LambdaFactory.register(classFileTransformer, new LambdaInstanceFactory(byteBuddy), this)) {
+            protected void apply(ByteBuddy byteBuddy,
+                                 Default.BootstrapInjectionStrategy bootstrapInjectionStrategy,
+                                 Instrumentation instrumentation,
+                                 ClassFileTransformer classFileTransformer) {
+                if (LambdaFactory.register(classFileTransformer, new LambdaInstanceFactory(byteBuddy, bootstrapInjectionStrategy), this)) {
                     Class<?> lambdaMetaFactory;
                     try {
                         lambdaMetaFactory = Class.forName("java.lang.invoke.LambdaMetafactory");
@@ -2012,7 +2017,10 @@ public interface AgentBuilder {
          */
         DISABLED {
             @Override
-            protected void apply(ByteBuddy byteBuddy, Instrumentation instrumentation, ClassFileTransformer classFileTransformer) {
+            protected void apply(ByteBuddy byteBuddy,
+                                 Default.BootstrapInjectionStrategy bootstrapInjectionStrategy,
+                                 Instrumentation instrumentation,
+                                 ClassFileTransformer classFileTransformer) {
                     /* do nothing */
             }
 
@@ -2059,11 +2067,15 @@ public interface AgentBuilder {
         /**
          * Applies a transformation to lambda instances if applicable.
          *
-         * @param byteBuddy            The Byte Buddy instance to use.
-         * @param instrumentation      The instrumentation instance for applying a redefinition.
-         * @param classFileTransformer The class file transformer to apply.
+         * @param byteBuddy                  The Byte Buddy instance to use.
+         * @param bootstrapInjectionStrategy
+         * @param instrumentation            The instrumentation instance for applying a redefinition.
+         * @param classFileTransformer       The class file transformer to apply.
          */
-        protected abstract void apply(ByteBuddy byteBuddy, Instrumentation instrumentation, ClassFileTransformer classFileTransformer);
+        protected abstract void apply(ByteBuddy byteBuddy,
+                                      Default.BootstrapInjectionStrategy bootstrapInjectionStrategy,
+                                      Instrumentation instrumentation,
+                                      ClassFileTransformer classFileTransformer);
 
         /**
          * Indicates if this strategy enables instrumentation of the {@code LambdaMetafactory}.
@@ -2116,13 +2128,17 @@ public interface AgentBuilder {
              */
             private final ByteBuddy byteBuddy;
 
+            private final Default.BootstrapInjectionStrategy bootstrapInjectionStrategy;
+
             /**
              * Creates a new lambda instance factory.
              *
-             * @param byteBuddy The Byte Buddy instance to use for creating lambda objects.
+             * @param byteBuddy                  The Byte Buddy instance to use for creating lambda objects.
+             * @param bootstrapInjectionStrategy
              */
-            protected LambdaInstanceFactory(ByteBuddy byteBuddy) {
+            protected LambdaInstanceFactory(ByteBuddy byteBuddy, Default.BootstrapInjectionStrategy bootstrapInjectionStrategy) {
                 this.byteBuddy = byteBuddy;
+                this.bootstrapInjectionStrategy = bootstrapInjectionStrategy;
             }
 
             /**
@@ -2140,16 +2156,16 @@ public interface AgentBuilder {
              * @param classFileTransformers       A collection of class file transformers to apply when creating the class.
              * @return A binary representation of the transformed class file.
              */
-            public byte[] make(Object targetTypeLookup,
-                               String lambdaMethodName,
-                               Object factoryMethodType,
-                               Object lambdaMethodType,
-                               Object targetMethodHandle,
-                               Object specializedLambdaMethodType,
-                               boolean serializable,
-                               List<Class<?>> markerInterfaces,
-                               List<?> additionalBridges,
-                               Collection<? extends ClassFileTransformer> classFileTransformers) {
+            public Class<?> make(Object targetTypeLookup,
+                                 String lambdaMethodName,
+                                 Object factoryMethodType,
+                                 Object lambdaMethodType,
+                                 Object targetMethodHandle,
+                                 Object specializedLambdaMethodType,
+                                 boolean serializable,
+                                 List<Class<?>> markerInterfaces,
+                                 List<?> additionalBridges,
+                                 Collection<? extends ClassFileTransformer> classFileTransformers) {
                 JavaInstance.MethodType factoryMethod = JavaInstance.MethodType.of(factoryMethodType);
                 JavaInstance.MethodType lambdaMethod = JavaInstance.MethodType.of(lambdaMethodType);
                 JavaInstance.MethodHandle targetMethod = JavaInstance.MethodHandle.of(targetMethodHandle, targetTypeLookup);
@@ -2167,7 +2183,8 @@ public interface AgentBuilder {
                         .method(named(lambdaMethodName)
                                 .and(takesArguments(lambdaMethod.getParameterTypes()))
                                 .and(returns(lambdaMethod.getReturnType())))
-                        .intercept(new LambdaMethodImplementation(targetMethod, specializedLambdaMethod));
+                        .intercept(new LambdaMethodImplementation(targetMethod, specializedLambdaMethod))
+                        .defineField("lambda$methodHandle", JavaType.METHOD_HANDLE.getTypeStub(), Visibility.PUBLIC, Ownership.STATIC);
                 int index = 0;
                 for (TypeDescription capturedType : factoryMethod.getParameterTypes()) {
                     builder = builder.defineField(FIELD_PREFIX + ++index, capturedType, Visibility.PRIVATE, FieldManifestation.FINAL);
@@ -2204,7 +2221,8 @@ public interface AgentBuilder {
                             .withParameters(additionalBridge.getParameterTypes())
                             .intercept(new BridgeMethodImplementation(lambdaMethodName, lambdaMethod));
                 }
-                byte[] classFile = builder.make().getBytes();
+                DynamicType.Unloaded<?> lambdaImplementation = builder.make();
+                byte[] classFile = lambdaImplementation.getBytes();
                 for (ClassFileTransformer classFileTransformer : classFileTransformers) {
                     try {
                         byte[] transformedClassFile = classFileTransformer.transform(targetType.getClassLoader(),
@@ -2219,7 +2237,17 @@ public interface AgentBuilder {
                             /* do nothing */
                     }
                 }
-                return classFile;
+                Class<?> lambdaType = (targetType.getClassLoader() == null
+                        ? bootstrapInjectionStrategy.make(targetType.getProtectionDomain())
+                        : new ClassInjector.UsingReflection(targetType.getClassLoader()))
+                        .inject(Collections.singletonMap(lambdaImplementation.getTypeDescription(), classFile))
+                        .get(lambdaImplementation.getTypeDescription());
+                try {
+                    lambdaType.getDeclaredField("lambda$methodHandle").set(null, targetMethodHandle);
+                } catch (Exception exception) {
+                    exception.printStackTrace();
+                }
+                return lambdaType;
             }
 
             @Override
@@ -2264,7 +2292,7 @@ public interface AgentBuilder {
 
                 @Override
                 public ByteCodeAppender appender(Target implementationTarget) {
-                    return new Appender(implementationTarget.getInstrumentedType().getDeclaredFields());
+                    return new Appender(implementationTarget.getInstrumentedType().getDeclaredFields().filter(not(isStatic())));
                 }
 
                 @Override
@@ -2285,24 +2313,24 @@ public interface AgentBuilder {
                     /**
                      * The fields that are declared by the instrumented type.
                      */
-                    private final List<FieldDescription.InDefinedShape> declaredFields;
+                    private final List<FieldDescription.InDefinedShape> lambdaArguments;
 
                     /**
                      * Creates a new appender.
                      *
-                     * @param declaredFields The fields that are declared by the instrumented type.
+                     * @param lambdaArguments The fields that are declared by the instrumented type.
                      */
-                    protected Appender(List<FieldDescription.InDefinedShape> declaredFields) {
-                        this.declaredFields = declaredFields;
+                    protected Appender(List<FieldDescription.InDefinedShape> lambdaArguments) {
+                        this.lambdaArguments = lambdaArguments;
                     }
 
                     @Override
                     public Size apply(MethodVisitor methodVisitor, Context implementationContext, MethodDescription instrumentedMethod) {
-                        List<StackManipulation> fieldAssignments = new ArrayList<StackManipulation>(declaredFields.size() * 3);
+                        List<StackManipulation> fieldAssignments = new ArrayList<StackManipulation>(lambdaArguments.size() * 3);
                         for (ParameterDescription parameterDescription : instrumentedMethod.getParameters()) {
                             fieldAssignments.add(MethodVariableAccess.REFERENCE.loadOffset(0));
                             fieldAssignments.add(MethodVariableAccess.of(parameterDescription.getType()).loadOffset(parameterDescription.getOffset()));
-                            fieldAssignments.add(FieldAccess.forField(declaredFields.get(parameterDescription.getIndex())).putter());
+                            fieldAssignments.add(FieldAccess.forField(lambdaArguments.get(parameterDescription.getIndex())).putter());
                         }
                         return new Size(new StackManipulation.Compound(
                                 MethodVariableAccess.REFERENCE.loadOffset(0),
@@ -2315,18 +2343,18 @@ public interface AgentBuilder {
                     @Override
                     public boolean equals(Object other) {
                         return this == other || !(other == null || getClass() != other.getClass())
-                                && declaredFields.equals(((Appender) other).declaredFields);
+                                && lambdaArguments.equals(((Appender) other).lambdaArguments);
                     }
 
                     @Override
                     public int hashCode() {
-                        return declaredFields.hashCode();
+                        return lambdaArguments.hashCode();
                     }
 
                     @Override
                     public String toString() {
                         return "AgentBuilder.LambdaInstrumentationStrategy.LambdaInstanceFactory.ConstructorImplementation.Appender{" +
-                                "declaredFields=" + declaredFields +
+                                "lambdaArguments=" + lambdaArguments +
                                 '}';
                     }
                 }
@@ -2492,27 +2520,28 @@ public interface AgentBuilder {
                     /**
                      * The instrumented type's declared fields.
                      */
-                    private final List<FieldDescription.InDefinedShape> declaredFields;
+                    private final List<FieldDescription.InDefinedShape> lambdaArguments;
 
                     /**
                      * Creates an appender of a lambda expression's functional method.
                      *
                      * @param targetMethod            The target method of the lambda expression.
                      * @param specializedLambdaMethod The specialized type of the lambda method.
-                     * @param declaredFields          The instrumented type's declared fields.
+                     * @param lambdaArguments         The instrumented type's declared fields.
                      */
                     protected Appender(MethodDescription targetMethod,
                                        JavaInstance.MethodType specializedLambdaMethod,
-                                       List<FieldDescription.InDefinedShape> declaredFields) {
+                                       List<FieldDescription.InDefinedShape> lambdaArguments) {
                         this.targetMethod = targetMethod;
                         this.specializedLambdaMethod = specializedLambdaMethod;
-                        this.declaredFields = declaredFields;
+                        this.lambdaArguments = lambdaArguments;
                     }
 
                     @Override
                     public Size apply(MethodVisitor methodVisitor, Context implementationContext, MethodDescription instrumentedMethod) {
-                        List<StackManipulation> fieldAccess = new ArrayList<StackManipulation>(declaredFields.size() * 2);
-                        for (FieldDescription.InDefinedShape fieldDescription : declaredFields) {
+                        List<StackManipulation> fieldAccess = new ArrayList<StackManipulation>(lambdaArguments.size() * 2);
+                        fieldAccess.add(FieldAccess.forField(lambdaArguments.get(0)).getter());
+                        for (FieldDescription.InDefinedShape fieldDescription : lambdaArguments.subList(1, lambdaArguments.size())) {
                             fieldAccess.add(MethodVariableAccess.REFERENCE.loadOffset(0));
                             fieldAccess.add(FieldAccess.forField(fieldDescription).getter());
                         }
@@ -2526,9 +2555,33 @@ public interface AgentBuilder {
                         return new Size(new StackManipulation.Compound(
                                 new StackManipulation.Compound(fieldAccess),
                                 new StackManipulation.Compound(parameterAccess),
-                                MethodInvocation.invoke(targetMethod),
+                                new FooBar(specializedLambdaMethod),
                                 MethodReturn.returning(targetMethod.getReturnType().asErasure())
                         ).apply(methodVisitor, implementationContext).getMaximalSize(), instrumentedMethod.getStackSize());
+                    }
+
+                    private static class FooBar implements StackManipulation {
+
+                        private final JavaInstance.MethodType methodType;
+
+                        public FooBar(JavaInstance.MethodType methodType) {
+                            this.methodType = methodType;
+                        }
+
+                        @Override
+                        public boolean isValid() {
+                            return true;
+                        }
+
+                        @Override
+                        public Size apply(MethodVisitor methodVisitor, Context implementationContext) {
+                            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                                    MethodHandle.class.getName().replace('.', '/'),
+                                    "invokeExact",
+                                    methodType.getDescriptor(),
+                                    false);
+                            return new Size(1,1);
+                        }
                     }
 
                     @Override
@@ -2537,14 +2590,14 @@ public interface AgentBuilder {
                         if (other == null || getClass() != other.getClass()) return false;
                         Appender appender = (Appender) other;
                         return targetMethod.equals(appender.targetMethod)
-                                && declaredFields.equals(appender.declaredFields)
+                                && lambdaArguments.equals(appender.lambdaArguments)
                                 && specializedLambdaMethod.equals(appender.specializedLambdaMethod);
                     }
 
                     @Override
                     public int hashCode() {
                         int result = targetMethod.hashCode();
-                        result = 31 * result + declaredFields.hashCode();
+                        result = 31 * result + lambdaArguments.hashCode();
                         result = 31 * result + specializedLambdaMethod.hashCode();
                         return result;
                     }
@@ -2554,7 +2607,7 @@ public interface AgentBuilder {
                         return "AgentBuilder.LambdaInstrumentationStrategy.LambdaInstanceFactory.LambdaMethodImplementation.Appender{" +
                                 "targetMethod=" + targetMethod +
                                 ", specializedLambdaMethod=" + specializedLambdaMethod +
-                                ", declaredFields=" + declaredFields +
+                                ", lambdaArguments=" + lambdaArguments +
                                 '}';
                     }
                 }
@@ -2627,11 +2680,12 @@ public interface AgentBuilder {
                     } catch (ClassNotFoundException exception) {
                         throw new IllegalStateException("Cannot find class for lambda serialization", exception);
                     }
-                    List<StackManipulation> lambdaArguments = new ArrayList<StackManipulation>(implementationTarget.getInstrumentedType().getDeclaredFields().size());
-                    for (FieldDescription.InDefinedShape fieldDescription : implementationTarget.getInstrumentedType().getDeclaredFields()) {
-                        lambdaArguments.add(new StackManipulation.Compound(MethodVariableAccess.REFERENCE.loadOffset(0),
-                                FieldAccess.forField(fieldDescription).getter(),
-                                Assigner.DEFAULT.assign(fieldDescription.getType(), TypeDescription.Generic.OBJECT, Assigner.Typing.STATIC)));
+                    List<FieldDescription.InDefinedShape> lambdaArguments = implementationTarget.getInstrumentedType().getDeclaredFields().filter(not(isStatic()));
+                    List<StackManipulation> lambdaArgumentsLoads = new ArrayList<StackManipulation>(lambdaArguments.size());
+                    for (FieldDescription.InDefinedShape lambdaArgument : lambdaArguments) {
+                        lambdaArgumentsLoads.add(new StackManipulation.Compound(MethodVariableAccess.REFERENCE.loadOffset(0),
+                                FieldAccess.forField(lambdaArgument).getter(),
+                                Assigner.DEFAULT.assign(lambdaArgument.getType(), TypeDescription.Generic.OBJECT, Assigner.Typing.STATIC)));
                     }
                     return new ByteCodeAppender.Simple(new StackManipulation.Compound(
                             TypeCreation.of(serializedLambda),
@@ -2645,7 +2699,7 @@ public interface AgentBuilder {
                             new TextConstant(targetMethod.getName()),
                             new TextConstant(targetMethod.getDescriptor()),
                             new TextConstant(specializedMethod.getDescriptor()),
-                            ArrayFactory.forType(TypeDescription.Generic.OBJECT).withValues(lambdaArguments),
+                            ArrayFactory.forType(TypeDescription.Generic.OBJECT).withValues(lambdaArgumentsLoads),
                             MethodInvocation.invoke(serializedLambda.getDeclaredMethods().filter(isConstructor()).getOnly()),
                             MethodReturn.REFERENCE
                     ));
@@ -2945,14 +2999,8 @@ public interface AgentBuilder {
                 methodVisitor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/Collections", "emptyList", "()Ljava/util/List;", false);
                 methodVisitor.visitInsn(Opcodes.AASTORE);
                 methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/reflect/Method", "invoke", "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;", false);
-                methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, "[B");
-                methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, "[B");
-                methodVisitor.visitInsn(Opcodes.ACONST_NULL);
-                methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "sun/misc/Unsafe", "defineAnonymousClass", "(Ljava/lang/Class;[B[Ljava/lang/Object;)Ljava/lang/Class;", false);
+                methodVisitor.visitTypeInsn(Opcodes.CHECKCAST, "Ljava/lang/Class;");
                 methodVisitor.visitVarInsn(Opcodes.ASTORE, 7);
-                methodVisitor.visitVarInsn(Opcodes.ALOAD, 6);
-                methodVisitor.visitVarInsn(Opcodes.ALOAD, 7);
-                methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "sun/misc/Unsafe", "ensureClassInitialized", "(Ljava/lang/Class;)V", false);
                 methodVisitor.visitVarInsn(Opcodes.ALOAD, 2);
                 methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/invoke/MethodType", "parameterCount", "()I", false);
                 Label conditionalDefault = new Label();
@@ -3696,7 +3744,7 @@ public interface AgentBuilder {
             if (nativeMethodStrategy.isEnabled(instrumentation)) {
                 instrumentation.setNativeMethodPrefix(classFileTransformer, nativeMethodStrategy.getPrefix());
             }
-            lambdaInstrumentationStrategy.apply(byteBuddy, instrumentation, classFileTransformer);
+            lambdaInstrumentationStrategy.apply(byteBuddy, bootstrapInjectionStrategy, instrumentation, classFileTransformer);
             if (redefinitionStrategy.isEnabled()) {
                 RedefinitionStrategy.Collector collector = redefinitionStrategy.makeCollector(transformation);
                 for (Class<?> type : instrumentation.getAllLoadedClasses()) {

@@ -31,7 +31,10 @@ public class AgentBuilderLambdaInstrumentationStrategyTest {
             Instrumentation instrumentation = mock(Instrumentation.class);
             ClassFileTransformer classFileTransformer = mock(ClassFileTransformer.class);
             try {
-                AgentBuilder.Default.LambdaInstrumentationStrategy.ENABLED.apply(byteBuddy, instrumentation, classFileTransformer);
+                AgentBuilder.Default.LambdaInstrumentationStrategy.ENABLED.apply(byteBuddy,
+                        AgentBuilder.Default.BootstrapInjectionStrategy.Disabled.INSTANCE,
+                        instrumentation,
+                        classFileTransformer);
             } finally {
                 assertThat(LambdaFactory.release(classFileTransformer), is(false));
             }
@@ -45,7 +48,10 @@ public class AgentBuilderLambdaInstrumentationStrategyTest {
         ByteBuddy byteBuddy = mock(ByteBuddy.class);
         Instrumentation instrumentation = mock(Instrumentation.class);
         ClassFileTransformer classFileTransformer = mock(ClassFileTransformer.class);
-        AgentBuilder.Default.LambdaInstrumentationStrategy.DISABLED.apply(byteBuddy, instrumentation, classFileTransformer);
+        AgentBuilder.Default.LambdaInstrumentationStrategy.DISABLED.apply(byteBuddy,
+                AgentBuilder.Default.BootstrapInjectionStrategy.Disabled.INSTANCE,
+                instrumentation,
+                classFileTransformer);
         verifyZeroInteractions(byteBuddy);
         verifyZeroInteractions(instrumentation);
         verifyZeroInteractions(classFileTransformer);

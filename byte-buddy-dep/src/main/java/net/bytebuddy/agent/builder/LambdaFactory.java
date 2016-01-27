@@ -133,7 +133,7 @@ public class LambdaFactory {
      * @param classFileTransformers  A collection of class file transformers to apply when creating the class.
      * @return A binary representation of the transformed class file.
      */
-    private byte[] invoke(Object caller,
+    private Class<?> invoke(Object caller,
                           String invokedName,
                           Object invokedType,
                           Object samMethodType,
@@ -145,7 +145,7 @@ public class LambdaFactory {
                           Collection<ClassFileTransformer> classFileTransformers) {
 
         try {
-            return (byte[]) dispatcher.invoke(target,
+            return (Class<?>) dispatcher.invoke(target,
                     caller,
                     invokedName,
                     invokedType,
@@ -177,7 +177,7 @@ public class LambdaFactory {
      * @param additionalBridges      A list of additional bridge methods to be implemented by the lambda expression.
      * @return A binary representation of the transformed class file.
      */
-    public static byte[] make(Object caller,
+    public static Class<?> make(Object caller,
                               String invokedName,
                               Object invokedType,
                               Object samMethodType,
