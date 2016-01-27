@@ -987,7 +987,8 @@ public interface AgentBuilder {
         enum SelfInjection implements InitializationStrategy {
 
             /**
-             * A form of self-injection where auxiliary types that are a subtype of the instrumented type are loaded lazily and
+             * A form of self-injection where auxiliary types that are annotated by
+             * {@link net.bytebuddy.implementation.auxiliary.AuxiliaryType.SignatureRelevant} of the instrumented type are loaded lazily and
              * any other auxiliary type is loaded eagerly.
              */
             SPLIT {
@@ -2204,7 +2205,7 @@ public interface AgentBuilder {
                                     lambdaMethodName,
                                     lambdaMethod,
                                     targetMethod,
-                                    JavaInstance.MethodType.of(specializedLambdaMethodType)));
+                                    JavaInstance.MethodType.ofLoaded(specializedLambdaMethodType)));
                 } else if (factoryMethod.getReturnType().isAssignableTo(Serializable.class)) {
                     builder = builder.defineMethod("readObject", void.class, Visibility.PRIVATE)
                             .withParameters(ObjectInputStream.class)
@@ -2216,7 +2217,7 @@ public interface AgentBuilder {
                             .intercept(ExceptionMethod.throwing(NotSerializableException.class, "Non-serializable lambda"));
                 }
                 for (Object additionalBridgeType : additionalBridges) {
-                    JavaInstance.MethodType additionalBridge = JavaInstance.MethodType.of(additionalBridgeType);
+                    JavaInstance.MethodType additionalBridge = JavaInstance.MethodType.ofLoaded(additionalBridgeType);
                     builder = builder.defineMethod(lambdaMethodName, additionalBridge.getReturnType(), MethodManifestation.BRIDGE, Visibility.PUBLIC)
                             .withParameters(additionalBridge.getParameterTypes())
                             .intercept(new BridgeMethodImplementation(lambdaMethodName, lambdaMethod));
@@ -2558,30 +2559,6 @@ public interface AgentBuilder {
                                 new FooBar(specializedLambdaMethod),
                                 MethodReturn.returning(targetMethod.getReturnType().asErasure())
                         ).apply(methodVisitor, implementationContext).getMaximalSize(), instrumentedMethod.getStackSize());
-                    }
-
-                    private static class FooBar implements StackManipulation {
-
-                        private final JavaInstance.MethodType methodType;
-
-                        public FooBar(JavaInstance.MethodType methodType) {
-                            this.methodType = methodType;
-                        }
-
-                        @Override
-                        public boolean isValid() {
-                            return true;
-                        }
-
-                        @Override
-                        public Size apply(MethodVisitor methodVisitor, Context implementationContext) {
-                            methodVisitor.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
-                                    MethodHandle.class.getName().replace('.', '/'),
-                                    "invokeExact",
-                                    methodType.getDescriptor(),
-                                    false);
-                            return new Size(1,1);
-                        }
                     }
 
                     @Override
